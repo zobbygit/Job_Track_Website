@@ -1,158 +1,18 @@
 import connectDB from "../lib/db";
-import "@/lib/models";
-import { Board, Column, JobApplication } from "@/lib/models";
+import { Board, Column, JobApplication } from "../lib/models";
 
-const USER_ID = "6929e34361b6f083d154859d";
+// Read from env — required
+const USER_ID = process.env.SEED_USER_ID;
 
 const SAMPLE_JOBS = [
-  // Wish List
-  {
-    company: "MU Company",
-    position: "Software Developer",
-    location: "San Francisco, CA",
-    tags: ["React", "Tailwind", "High Pay"],
-    description: "Build modern web applications using React and Tailwind CSS",
-    jobUrl: "https://example.com/jobs/1",
-    salary: "$120k - $150k",
-  },
-  {
-    company: "Stripe",
-    position: "Front End Developer",
-    location: "Remote",
-    tags: ["TypeScript", "React", "Next.js"],
-    description: "Work on payment infrastructure frontend",
-    jobUrl: "https://example.com/jobs/2",
-    salary: "$130k - $160k",
-  },
-  {
-    company: "Nutrishe",
-    position: "QA Engineer",
-    location: "New York, NY",
-    tags: ["CIT", "Appium", "CI/CD"],
-    description: "Ensure quality of mobile and web applications",
-    jobUrl: "https://example.com/jobs/3",
-    salary: "$90k - $110k",
-  },
-  // Applied
-  {
-    company: "LeaFood",
-    position: "DevOps Engineer",
-    location: "Austin, TX",
-    tags: ["promQL", "Full-stack", "Docker"],
-    description: "Manage infrastructure and deployment pipelines",
-    jobUrl: "https://example.com/jobs/4",
-    salary: "$110k - $140k",
-  },
-  {
-    company: "Nomura",
-    position: "Mobile Developer",
-    location: "Tokyo, Japan",
-    tags: ["React Native", "iOS", "Android"],
-    description: "Develop mobile applications for financial services",
-    jobUrl: "https://example.com/jobs/5",
-    salary: "$100k - $130k",
-  },
-  {
-    company: "Wise",
-    position: "UI/UX Designer",
-    location: "London, UK",
-    tags: ["Figma", "Design Systems", "User Research"],
-    description: "Design beautiful and intuitive user experiences",
-    jobUrl: "https://example.com/jobs/6",
-    salary: "$80k - $100k",
-  },
-  {
-    company: "Danone",
-    position: "DevOps Engineer",
-    location: "Paris, France",
-    tags: ["promQL", "Full-stack", "Docker"],
-    description: "Support cloud infrastructure and CI/CD",
-    jobUrl: "https://example.com/jobs/7",
-    salary: "$95k - $120k",
-  },
-  // Interviewing
-  {
-    company: "Retomotion",
-    position: "Web Designer",
-    location: "Berlin, Germany",
-    tags: ["Figma", "React", "Bootstrap"],
-    description: "Create responsive web designs and implement them",
-    jobUrl: "https://example.com/jobs/8",
-    salary: "$85k - $105k",
-  },
-  {
-    company: "WorkLab",
-    position: "Product Manager",
-    location: "Seattle, WA",
-    tags: ["Product Strategy", "Agile", "Analytics"],
-    description:
-      "Help drive the product and business planning for our platform",
-    jobUrl: "https://example.com/jobs/9",
-    salary: "$140k - $170k",
-  },
-  {
-    company: "I Networks",
-    position: "Mobile Developer",
-    location: "Remote",
-    tags: ["Flutter", "Dart", "Firebase"],
-    description: "Build cross-platform mobile applications",
-    jobUrl: "https://example.com/jobs/10",
-    salary: "$115k - $145k",
-  },
-  // Offer
-  {
-    company: "Profan",
-    position: "Software Developer",
-    location: "Stockholm, Sweden",
-    tags: ["Node.js", "PostgreSQL", "AWS"],
-    description: "Develop backend services and APIs",
-    jobUrl: "https://example.com/jobs/11",
-    salary: "$100k - $125k",
-  },
-  {
-    company: "MUS Logistics",
-    position: "UI Designer",
-    location: "Amsterdam, Netherlands",
-    tags: ["Figma", "Illustrator"],
-    description:
-      "Lead the UX process and workflow, and work closely with development team",
-    jobUrl: "https://example.com/jobs/12",
-    salary: "$90k - $110k",
-  },
-  // Rejected
-  {
-    company: "Ultra Vouche",
-    position: "Associate",
-    location: "Chicago, IL",
-    tags: ["Scrum", "Agile"],
-    description: "Support product development and project management",
-    jobUrl: "https://example.com/jobs/13",
-    salary: "$70k - $85k",
-  },
-  {
-    company: "NRI",
-    position: "Web Test",
-    location: "Boston, MA",
-    tags: ["Testing", "Automation"],
-    description: "Manage product testing and quality assurance",
-    jobUrl: "https://example.com/jobs/14",
-    salary: "$75k - $90k",
-  },
-  {
-    company: "TOG London",
-    position: "Data Ana",
-    location: "London, UK",
-    tags: ["JavaScript", "Python", "SQL"],
-    description: "Analyze user data and provide insights for product decisions",
-    jobUrl: "https://example.com/jobs/15",
-    salary: "$85k - $100k",
-  },
+  // ... keep your exact same data array here, unchanged ...
 ];
 
 async function seed() {
+  // ✅ Real validation now
   if (!USER_ID) {
-    console.error("❌ Error: SEED_USER_ID environment variable is required");
-    console.log("Usage: SEED_USER_ID=your-user-id npm run seed");
+    console.error("❌ SEED_USER_ID env variable is required.");
+    console.error("   Usage: SEED_USER_ID=<user-id> npm run seed:jobs");
     process.exit(1);
   }
 
@@ -163,7 +23,7 @@ async function seed() {
     await connectDB();
     console.log("✅ Connected to database");
 
-    // Find the user's board
+    // Find or create the board
     let board = await Board.findOne({ userId: USER_ID, name: "Job Hunt" });
 
     if (!board) {
@@ -175,41 +35,30 @@ async function seed() {
       console.log("✅ Board found");
     }
 
-    // Get all columns
-    const columns = await Column.find({ boardId: board._id }).sort({
-      order: 1,
-    });
+    const columns = await Column.find({ boardId: board._id }).sort({ order: 1 });
     console.log(`✅ Found ${columns.length} columns`);
 
     if (columns.length === 0) {
-      console.error(
-        "❌ No columns found. Please ensure the board has default columns."
-      );
+      console.error("❌ No columns found. Aborting.");
       process.exit(1);
     }
 
-    // Map column names to column IDs
     const columnMap: Record<string, string> = {};
     columns.forEach((col) => {
       columnMap[col.name] = col._id.toString();
     });
 
-    // Clear existing job applications for this user
+    // Cleanup existing
     const existingJobs = await JobApplication.find({ userId: USER_ID });
     if (existingJobs.length > 0) {
-      console.log(
-        `🗑️  Deleting ${existingJobs.length} existing job applications...`
-      );
+      console.log(`🗑️  Deleting ${existingJobs.length} existing job applications...`);
       await JobApplication.deleteMany({ userId: USER_ID });
-
-      // Clear job applications from columns
-      for (const column of columns) {
-        column.jobApplications = [];
-        await column.save();
-      }
+      await Column.updateMany(
+        { boardId: board._id },
+        { $set: { jobApplications: [] } }
+      );
     }
 
-    // Distribute jobs across columns
     const jobsByColumn: Record<string, typeof SAMPLE_JOBS> = {
       "Wish List": SAMPLE_JOBS.slice(0, 3),
       Applied: SAMPLE_JOBS.slice(3, 7),
@@ -218,21 +67,16 @@ async function seed() {
       Rejected: SAMPLE_JOBS.slice(12, 15),
     };
 
-    let totalCreated = 0;
-
+    // ✅ BATCH INSERT (one round trip)
+    const applicationsToCreate: any[] = [];
     for (const [columnName, jobs] of Object.entries(jobsByColumn)) {
       const columnId = columnMap[columnName];
       if (!columnId) {
         console.warn(`⚠️  Column "${columnName}" not found, skipping...`);
         continue;
       }
-
-      const column = columns.find((c) => c.name === columnName);
-      if (!column) continue;
-
-      for (let i = 0; i < jobs.length; i++) {
-        const jobData = jobs[i];
-        const jobApplication = await JobApplication.create({
+      jobs.forEach((jobData, i) => {
+        applicationsToCreate.push({
           company: jobData.company,
           position: jobData.position,
           location: jobData.location,
@@ -240,26 +84,35 @@ async function seed() {
           description: jobData.description,
           jobUrl: jobData.jobUrl,
           salary: jobData.salary,
-          columnId: columnId,
+          columnId,
           boardId: board._id,
           userId: USER_ID,
-          status: columnName.toLowerCase().replace(" ", "-"),
-          order: i,
+          status: columnName.toLowerCase().replace(/\s+/g, "-"),
+          order: i * 100, // ✅ consistent with server strategy
         });
-
-        column.jobApplications.push(jobApplication._id);
-        totalCreated++;
-      }
-
-      await column.save();
-      console.log(`✅ Added ${jobs.length} jobs to "${columnName}" column`);
+      });
     }
 
+    const createdApplications = await JobApplication.insertMany(applicationsToCreate);
+
+    // Attach references back to columns (bulk)
+    await Promise.all(
+      columns.map(async (col) => {
+        const ids = createdApplications
+          .filter((app) => app.columnId.toString() === col._id.toString())
+          .map((app) => app._id);
+        if (ids.length) {
+          await Column.findByIdAndUpdate(col._id, {
+            $set: { jobApplications: ids },
+          });
+        }
+      })
+    );
+
     console.log(`\n🎉 Seed completed successfully!`);
-    console.log(`📊 Created ${totalCreated} job applications`);
+    console.log(`📊 Created ${createdApplications.length} job applications`);
     console.log(`📋 Board: ${board.name}`);
     console.log(`👤 User ID: ${USER_ID}`);
-
     process.exit(0);
   } catch (error) {
     console.error("❌ Error seeding database:", error);

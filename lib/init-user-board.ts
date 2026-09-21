@@ -31,16 +31,17 @@ export async function initializeUserBoard(userId: string) {
     });
 
     // Create default columns
-    const columns = await Promise.all(
-      DEFAULT_COLUMNS.map((col) =>
-        Column.create({
-          name: col.name,
-          order: col.order,
-          boardId: board._id,
-          jobApplication: [],
-        })
-      )
-    );
+
+const columns = await Promise.all(
+  DEFAULT_COLUMNS.map((col) =>
+    Column.create({
+      name: col.name,
+      order: col.order,
+      boardId: board._id,
+      jobApplications: [],   // ✅ plural
+    })
+  )
+);
 
     // Update the board with the new column IDs
     board.columns = columns.map((col) => col._id);

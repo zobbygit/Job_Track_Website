@@ -5,29 +5,55 @@ import { redirect } from "next/navigation";
 import { initializeUserBoard } from "../init-user-board";
 import connectDB from "../db";
 
-const mongooseInstance = await connectDB();
+/* -------------------------------------------------------------------------- */
+/*                        CONNECT ONCE AT MODULE LOAD                         */
+/* -------------------------------------------------------------------------- */
+let mongooseInstance;
+try {
+  mongooseInstance = await connectDB();
+} catch (err) {
+  console.error(
+    "❌ Failed to connect to MongoDB at auth init. Check MONGODB_URI and network access.",
+    err
+  );
+  throw err;
+}
+
 const client = mongooseInstance.connection.getClient();
 const db = client.db();
 
+/* -------------------------------------------------------------------------- */
+/*                                AUTH CONFIG                                 */
+/* -------------------------------------------------------------------------- */
 export const auth = betterAuth({
-  database: mongodbAdapter(db, {
-    client,
-  }),
+  database: mongodbAdapter(db, { client }),
+
+  // ✅ Explicit — required for production
+  secret: process.env.BETTER_AUTH_SECRET!,
+  baseURL: process.env.BETTER_AUTH_URL!,
+
   session: {
     cookieCache: {
       enabled: true,
-      maxAge: 60 * 60,
+      maxAge: 60 * 60 * 24 * 7, // 7 days
     },
   },
+
   emailAndPassword: {
     enabled: true,
+    minPasswordLength: 8,
   },
+
   databaseHooks: {
     user: {
       create: {
         after: async (user) => {
           if (user.id) {
-            await initializeUserBoard(user.id);
+            try {
+              await initializeUserBoard(user.id);
+            } catch (err) {
+              console.error("Failed to initialize user board:", err);
+            }
           }
         },
       },
@@ -35,20 +61,14 @@ export const auth = betterAuth({
   },
 });
 
+/* -------------------------------------------------------------------------- */
+/*                          SERVER-SIDE HELPERS                               */
+/* -------------------------------------------------------------------------- */
 export async function getSession() {
-  const result = await auth.api.getSession({
-    headers: await headers(),
-  });
-
-  return result;
+  return auth.api.getSession({ headers: await headers() });
 }
 
 export async function signOut() {
-  const result = await auth.api.signOut({
-    headers: await headers(),
-  });
-
-  if (result.success) {
-    redirect("/sign-in");
-  }
+  const result = await auth.api.signOut({ headers: await headers() });
+  if (result.success) redirect("/sign-in");
 }

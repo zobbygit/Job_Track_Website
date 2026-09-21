@@ -1,10 +1,19 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { getSession } from "../auth/auth";
 import connectDB from "../db";
 import { Board, Column, JobApplication } from "../models";
+import { serialize } from "../utils";
 
+/* -------------------------------------------------------------------------- */
+/*                                 CONSTANTS                                  */
+/* -------------------------------------------------------------------------- */
+const ORDER_GAP = 100;
+
+/* -------------------------------------------------------------------------- */
+/*                                  TYPES                                     */
+/* -------------------------------------------------------------------------- */
 interface JobApplicationData {
   company: string;
   position: string;
@@ -18,12 +27,65 @@ interface JobApplicationData {
   description?: string;
 }
 
-export async function createJobApplication(data: JobApplicationData) {
-  const session = await getSession();
+type UpdatePayload = {
+  company?: string;
+  position?: string;
+  location?: string;
+  notes?: string;
+  salary?: string;
+  jobUrl?: string;
+  columnId?: string;
+  order?: number;
+  tags?: string[];
+  description?: string;
+};
 
-  if (!session?.user) {
-    return { error: "Unauthorized" };
-  }
+type ActionResult<T> =
+  | { data: T; error?: never }
+  | { error: string; data?: never };
+
+/* -------------------------------------------------------------------------- */
+/*                            CACHE INVALIDATION                              */
+/* -------------------------------------------------------------------------- */
+function invalidateBoard(userId: string) {
+  revalidateTag(`board-${userId}`, "max");   // ✅ second arg = cache profile
+  revalidatePath("/dashboard");
+}
+
+/* -------------------------------------------------------------------------- */
+/*                    HELPER: REINDEX COLUMN TO idx * 100                     */
+/* -------------------------------------------------------------------------- */
+/**
+ * Reindexes every job in a column to `idx * 100` (0, 100, 200, ...).
+ * Called after any create / reorder / cross-column move so DB state
+ * always matches what the client optimistically computes.
+ */
+async function reindexColumn(columnId: string) {
+  const jobs = await JobApplication.find({ columnId })
+    .sort({ order: 1 })
+    .select("_id")
+    .lean<{ _id: unknown }[]>();
+
+  if (jobs.length === 0) return;
+
+  await JobApplication.bulkWrite(
+    jobs.map((job, idx) => ({
+      updateOne: {
+        filter: { _id: job._id },
+        update: { $set: { order: idx * ORDER_GAP } },
+      },
+    }))
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                 CREATE                                     */
+/* -------------------------------------------------------------------------- */
+export async function createJobApplication(
+  data: JobApplicationData
+): Promise<ActionResult<unknown>> {
+  const session = await getSession();
+  if (!session?.user) return { error: "Unauthorized" };
 
   await connectDB();
 
@@ -44,31 +106,18 @@ export async function createJobApplication(data: JobApplicationData) {
     return { error: "Missing required fields" };
   }
 
-  // Verify board ownership
+  // Ownership verification
   const board = await Board.findOne({
     _id: boardId,
     userId: session.user.id,
   });
+  if (!board) return { error: "Board not found" };
 
-  if (!board) {
-    return { error: "Board not found" };
-  }
+  const column = await Column.findOne({ _id: columnId, boardId });
+  if (!column) return { error: "Column not found" };
 
-  // Verify column belongs to board
-
-  const column = await Column.findOne({
-    _id: columnId,
-    boardId: boardId,
-  });
-
-  if (!column) {
-    return { error: "Column not found" };
-  }
-
-  const maxOrder = (await JobApplication.findOne({ columnId })
-    .sort({ order: -1 })
-    .select("order")
-    .lean()) as { order: number } | null;
+  // Next order = current count * 100 (keeps gaps clean)
+  const count = await JobApplication.countDocuments({ columnId });
 
   const jobApplication = await JobApplication.create({
     company,
@@ -80,184 +129,181 @@ export async function createJobApplication(data: JobApplicationData) {
     columnId,
     boardId,
     userId: session.user.id,
-    tags: tags || [],
+    tags: tags ?? [],
     description,
     status: "applied",
-    order: maxOrder ? maxOrder.order + 1 : 0,
+    order: count * ORDER_GAP,
   });
 
   await Column.findByIdAndUpdate(columnId, {
     $push: { jobApplications: jobApplication._id },
   });
 
-  revalidatePath("/dashboard");
+  invalidateBoard(session.user.id);
 
-  return { data: JSON.parse(JSON.stringify(jobApplication)) };
+  return { data: serialize(jobApplication) };
 }
 
+/* -------------------------------------------------------------------------- */
+/*                                 UPDATE                                     */
+/* -------------------------------------------------------------------------- */
 export async function updateJobApplication(
   id: string,
-  updates: {
-    company?: string;
-    position?: string;
-    location?: string;
-    notes?: string;
-    salary?: string;
-    jobUrl?: string;
-    columnId?: string;
-    order?: number;
-    tags?: string[];
-    description?: string;
-  }
-) {
+  updates: UpdatePayload
+): Promise<ActionResult<unknown>> {
   const session = await getSession();
+  if (!session?.user) return { error: "Unauthorized" };
 
-  if (!session?.user) {
+  await connectDB();
+
+  const job = await JobApplication.findById(id);
+  if (!job) return { error: "Job application not found" };
+
+  if (job.userId.toString() !== session.user.id.toString()) {
     return { error: "Unauthorized" };
   }
 
-  const jobApplication = await JobApplication.findById(id);
-
-  if (!jobApplication) {
-    return { error: "Job application not found" };
-  }
-
-  if (jobApplication.userId !== session.user.id) {
-    return { error: "Unauthorized" };
-  }
-
-  const { columnId, order, ...otherUpdates } = updates;
-
-  const updatesToApply: Partial<{
-    company: string;
-    position: string;
-    location: string;
-    notes: string;
-    salary: string;
-    jobUrl: string;
-    columnId: string;
-    order: number;
-    tags: string[];
-    description: string;
-  }> = otherUpdates;
-
-  const currentColumnId = jobApplication.columnId.toString();
+  const { columnId, order, ...fieldUpdates } = updates;
+  const currentColumnId = job.columnId.toString();
   const newColumnId = columnId?.toString();
+  const isMovingColumns = !!newColumnId && newColumnId !== currentColumnId;
 
-  const isMovingToDifferentColumn =
-    newColumnId && newColumnId !== currentColumnId;
+  /* ---------------------- CASE A: MOVING TO ANOTHER COLUMN ----------------- */
+  if (isMovingColumns) {
+    const targetColumn = await Column.findOne({
+      _id: newColumnId,
+      boardId: job.boardId,
+    });
+    if (!targetColumn) return { error: "Target column not found" };
 
-  if (isMovingToDifferentColumn) {
+    // Remove from old column
     await Column.findByIdAndUpdate(currentColumnId, {
       $pull: { jobApplications: id },
     });
 
-    const jobsInTargetColumn = await JobApplication.find({
+    // Fetch target column jobs (excluding the one being moved)
+    const existing = await JobApplication.find({
       columnId: newColumnId,
       _id: { $ne: id },
     })
       .sort({ order: 1 })
-      .lean();
+      .select("_id")
+      .lean<{ _id: unknown }[]>();
 
-    let newOrderValue: number;
+    // Determine insertion index
+    const insertIndex =
+      order !== undefined && order !== null
+        ? Math.max(0, Math.min(order, existing.length))
+        : existing.length;
 
-    if (order !== undefined && order !== null) {
-      newOrderValue = order * 100;
+    // Build final ordered list (existing + moved job at insertIndex)
+    const finalOrder: unknown[] = [
+      ...existing.slice(0, insertIndex).map((j) => j._id),
+      id,
+      ...existing.slice(insertIndex).map((j) => j._id),
+    ];
 
-      const jobsThatNeedToShift = jobsInTargetColumn.slice(order);
-      for (const job of jobsThatNeedToShift) {
-        await JobApplication.findByIdAndUpdate(job._id, {
-          $set: { order: job.order + 100 },
-        });
-      }
-    } else {
-      if (jobsInTargetColumn.length > 0) {
-        const lastJobOrder =
-          jobsInTargetColumn[jobsInTargetColumn.length - 1].order || 0;
-        newOrderValue = lastJobOrder + 100;
-      } else {
-        newOrderValue = 0;
-      }
-    }
+    // Reindex everyone to idx * 100, and update the moved job's column
+    await JobApplication.bulkWrite(
+      finalOrder.map((jobId, idx) => ({
+        updateOne: {
+          filter: { _id: jobId },
+          update: {
+            $set: {
+              order: idx * ORDER_GAP,
+              ...(jobId === id ? { columnId: newColumnId } : {}),
+            },
+          },
+        },
+      }))
+    );
 
-    updatesToApply.columnId = newColumnId;
-    updatesToApply.order = newOrderValue;
-
+    // Register in target column's array
     await Column.findByIdAndUpdate(newColumnId, {
       $push: { jobApplications: id },
     });
-  } else if (order !== undefined && order !== null) {
-    const otherJobsInColumn = await JobApplication.find({
+
+    // Apply any non-positional field updates too
+    if (Object.keys(fieldUpdates).length > 0) {
+      await JobApplication.findByIdAndUpdate(id, { $set: fieldUpdates });
+    }
+  }
+
+  /* ---------------------- CASE B: REORDER INSIDE SAME COLUMN --------------- */
+  else if (order !== undefined && order !== null) {
+    const otherJobs = await JobApplication.find({
       columnId: currentColumnId,
       _id: { $ne: id },
     })
       .sort({ order: 1 })
-      .lean();
+      .select("_id")
+      .lean<{ _id: unknown }[]>();
 
-    const currentJobOrder = jobApplication.order || 0;
-    const currentPositionIndex = otherJobsInColumn.findIndex(
-      (job) => job.order > currentJobOrder
+    const targetIndex = Math.max(0, Math.min(order, otherJobs.length));
+
+    const finalOrder: unknown[] = [
+      ...otherJobs.slice(0, targetIndex).map((j) => j._id),
+      id,
+      ...otherJobs.slice(targetIndex).map((j) => j._id),
+    ];
+
+    await JobApplication.bulkWrite(
+      finalOrder.map((jobId, idx) => ({
+        updateOne: {
+          filter: { _id: jobId },
+          update: { $set: { order: idx * ORDER_GAP } },
+        },
+      }))
     );
-    const oldPositionindex =
-      currentPositionIndex === -1
-        ? otherJobsInColumn.length
-        : currentPositionIndex;
 
-    const newOrderValue = order * 100;
-
-    if (order < oldPositionindex) {
-      const jobsToShiftDown = otherJobsInColumn.slice(order, oldPositionindex);
-
-      for (const job of jobsToShiftDown) {
-        await JobApplication.findByIdAndUpdate(job._id, {
-          $set: { order: job.order + 100 },
-        });
-      }
-    } else if (order > oldPositionindex) {
-      const jobsToShiftUp = otherJobsInColumn.slice(oldPositionindex, order);
-      for (const job of jobsToShiftUp) {
-        const newOrder = Math.max(0, job.order - 100);
-        await JobApplication.findByIdAndUpdate(job._id, {
-          $set: { order: newOrder },
-        });
-      }
+    if (Object.keys(fieldUpdates).length > 0) {
+      await JobApplication.findByIdAndUpdate(id, { $set: fieldUpdates });
     }
-
-    updatesToApply.order = newOrderValue;
   }
 
-  const updated = await JobApplication.findByIdAndUpdate(id, updatesToApply, {
-    new: true,
-  });
+  /* ---------------------- CASE C: ONLY FIELD UPDATES ----------------------- */
+  else if (Object.keys(fieldUpdates).length > 0) {
+    await JobApplication.findByIdAndUpdate(id, { $set: fieldUpdates });
+  }
 
-  revalidatePath("/dashboard");
+  const updated = await JobApplication.findById(id);
+  if (!updated) return { error: "Failed to update job application" };
 
-  return { data: JSON.parse(JSON.stringify(updated)) };
+  invalidateBoard(session.user.id);
+
+  return { data: serialize(updated) };
 }
 
-export async function deleteJobApplication(id: string) {
+/* -------------------------------------------------------------------------- */
+/*                                 DELETE                                     */
+/* -------------------------------------------------------------------------- */
+export async function deleteJobApplication(
+  id: string
+): Promise<ActionResult<{ success: true }>> {
   const session = await getSession();
+  if (!session?.user) return { error: "Unauthorized" };
 
-  if (!session?.user) {
+  await connectDB();
+
+  const job = await JobApplication.findById(id);
+  if (!job) return { error: "Job application not found" };
+
+  if (job.userId.toString() !== session.user.id.toString()) {
     return { error: "Unauthorized" };
   }
 
-  const jobApplication = await JobApplication.findById(id);
+  const columnId = job.columnId.toString();
 
-  if (!jobApplication) {
-    return { error: "Job application not found" };
-  }
-
-  if (jobApplication.userId !== session.user.id) {
-    return { error: "Unauthorized" };
-  }
-
-  await Column.findByIdAndUpdate(jobApplication.columnId, {
+  // Remove from column and delete
+  await Column.findByIdAndUpdate(columnId, {
     $pull: { jobApplications: id },
   });
-
   await JobApplication.deleteOne({ _id: id });
-  revalidatePath("/dashboard");
 
-  return { success: true };
+  // Reindex remaining jobs so gaps stay tidy
+  await reindexColumn(columnId);
+
+  invalidateBoard(session.user.id);
+
+  return { data: { success: true } };
 }

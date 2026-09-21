@@ -5,84 +5,87 @@ import { Board, Column, JobApplication } from "../models/models.types";
 import { updateJobApplication } from "../actions/job-applications";
 
 export function useBoard(initialBoard?: Board | null) {
-  const [board, setBoard] = useState<Board | null>(initialBoard || null);
-  const [columns, setColumns] = useState<Column[]>(initialBoard?.columns || []);
+  const [board, setBoard] = useState<Board | null>(initialBoard ?? null);
+  const [columns, setColumns] = useState<Column[]>(initialBoard?.columns ?? []);
   const [error, setError] = useState<string | null>(null);
 
+  // ✅ Re-sync when a DIFFERENT board arrives (not on every object identity change)
   useEffect(() => {
     if (initialBoard) {
       setBoard(initialBoard);
-      setColumns(initialBoard.columns || []);
+      setColumns(initialBoard.columns ?? []);
     }
-  }, [initialBoard]);
+  }, [initialBoard?._id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function moveJob(
     jobApplicationId: string,
     newColumnId: string,
     newOrder: number
   ) {
+    // ✅ Snapshot for rollback
+    const snapshot = columns;
+
+    // ✅ Optimistic update — reindexes ONLY the target column to idx * 100
+    //    (matches what the server does, so both states stay in sync)
     setColumns((prev) => {
       const newColumns = prev.map((col) => ({
         ...col,
-        jobApplications: [...col.jobApplications],
+        jobApplications: [...(col.jobApplications ?? [])],
       }));
 
-      // Find and remove job from the old column
-
       let jobToMove: JobApplication | null = null;
-      let oldColumnId: string | null = null;
 
       for (const col of newColumns) {
-        const jobIndex = col.jobApplications.findIndex(
+        const idx = col.jobApplications.findIndex(
           (j) => j._id === jobApplicationId
         );
-        if (jobIndex !== -1 && jobIndex !== undefined) {
-          jobToMove = col.jobApplications[jobIndex];
-          oldColumnId = col._id;
+        if (idx !== -1) {
+          jobToMove = col.jobApplications[idx];
           col.jobApplications = col.jobApplications.filter(
-            (job) => job._id !== jobApplicationId
+            (j) => j._id !== jobApplicationId
           );
           break;
         }
       }
 
-      if (jobToMove && oldColumnId) {
-        const targetColumnIndex = newColumns.findIndex(
-          (col) => col._id === newColumnId
-        );
-        if (targetColumnIndex !== -1) {
-          const targetColumn = newColumns[targetColumnIndex];
-          const currentJobs = targetColumn.jobApplications || [];
+      if (!jobToMove) return prev;
 
-          const updatedJobs = [...currentJobs];
-          updatedJobs.splice(newOrder, 0, {
-            ...jobToMove,
-            columnId: newColumnId,
-            order: newOrder * 100,
-          });
+      const targetIdx = newColumns.findIndex((c) => c._id === newColumnId);
+      if (targetIdx === -1) return prev;
 
-          const jobsWithUpdatedOrders = updatedJobs.map((job, idx) => ({
-            ...job,
-            order: idx * 100,
-          }));
+      const target = newColumns[targetIdx];
+      const updated = [...target.jobApplications];
+      updated.splice(newOrder, 0, { ...jobToMove, columnId: newColumnId });
 
-          newColumns[targetColumnIndex] = {
-            ...targetColumn,
-            jobApplications: jobsWithUpdatedOrders,
-          };
-        }
-      }
+      newColumns[targetIdx] = {
+        ...target,
+        jobApplications: updated.map((job, i) => ({
+          ...job,
+          order: i * 100,
+        })),
+      };
 
       return newColumns;
     });
 
+    // ✅ Server call + rollback on failure
     try {
       const result = await updateJobApplication(jobApplicationId, {
         columnId: newColumnId,
         order: newOrder,
       });
+
+ if ("error" in result && result.error) {
+  setColumns(snapshot);
+  setError(result.error);       // ✅ now definitely `string`
+  console.error("Move failed:", result.error);
+} else {
+  setError(null);
+}
     } catch (err) {
-      console.error("Error", err);
+      setColumns(snapshot);
+      setError("Network error — could not move job.");
+      console.error(err);
     }
   }
 

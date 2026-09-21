@@ -2,12 +2,15 @@
   "name": "job-application-tracker",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "seed:jobs": "tsx --env-file=.env.local scripts/seed.ts"
+    "seed:jobs": "tsx --env-file=.env scripts/seed.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
