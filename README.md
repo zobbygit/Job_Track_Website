@@ -14,7 +14,7 @@ Track every application from *Wish List* to *Offer* — drag, drop, and never lo
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-4-06B6D4?style=for-the-badge&logo=tailwindcss)](https://tailwindcss.com/)
 [![Vercel](https://img.shields.io/badge/Deployed_on-Vercel-black?style=for-the-badge&logo=vercel)](https://vercel.com/)
 
-[Live Demo](https://your-project.vercel.app) · [Report Bug](../../issues) · [Request Feature](../../issues)
+[Live Demo](https://job-track-app-inky.vercel.app) · [Report Bug](../../issues) · [Request Feature](../../issues)
 
 </div>
 
